@@ -2,18 +2,11 @@
 Wireless Switch – RECEIVER firmware
 Raspberry Pi Pico 2 W  |  Hardware v2
 
-Behaviour
----------
-* Connects to the TX's WiFi Access Point.
-* Receives switch states over UDP and drives 5 output channels.
-* GPIO  0 (CONNECTED LED) – solid ON when link is up.
-* GPIO  7 (SEARCHING LED) – flashes at 2 Hz while searching, OFF when linked.
-* GPIO  8 – Channel 1  N-channel MOSFET (up to 5 A switched 12 V)
-* GPIO  9 – Channel 2  N-channel MOSFET
-* GPIO 10 – Channel 3  N-channel MOSFET
-* GPIO 11 – Channel 4  N-channel MOSFET
-* GPIO 12 – Channel 5  Relay K2 (SPDT)
-* Safety: all outputs forced OFF if link is lost.
+GPIO  0  CONNECTED LED  – solid ON when link is up
+GPIO  7  SEARCHING LED  – flashes while searching, OFF when linked
+GPIO  8-11  MOSFET outputs CH1-CH4 (up to 5 A each)
+GPIO 12     Relay K2 output CH5
+Safety: all outputs forced OFF if link is lost.
 """
 
 import network
@@ -23,10 +16,18 @@ from machine import Pin
 import config
 
 
-# ─── Hardware setup ─────────────────────────────────────────
+# ─── Hardware ────────────────────────────────────────────────
 connected_led = Pin(config.GPIO_CONNECTED, Pin.OUT, value=0)
 searching_led = Pin(config.GPIO_SEARCHING, Pin.OUT, value=0)
 outputs       = [Pin(gp, Pin.OUT, value=0) for gp in config.RX_OUTPUT_GPIOS]
+
+
+def blink_error():
+    """Fast-blink both LEDs forever to signal a fatal error."""
+    while True:
+        connected_led.toggle()
+        searching_led.toggle()
+        time.sleep_ms(100)
 
 
 def all_outputs_off():
@@ -40,33 +41,34 @@ def set_outputs(states):
 
 
 def parse_packet(data):
-    """Return list of 5 switch states, or None if packet is invalid."""
     if len(data) < 7 or data[0] != 0xAA:
         return None
     states = list(data[1:6])
     if sum(states) & 0xFF != data[6]:
-        return None           # checksum mismatch
+        return None
     return states
 
 
 def connect_wifi():
+    # Confirm firmware alive – three quick searching LED blinks
+    for _ in range(3):
+        searching_led.value(1)
+        time.sleep_ms(150)
+        searching_led.value(0)
+        time.sleep_ms(150)
+
     sta = network.WLAN(network.STA_IF)
     sta.active(True)
-    search_led_state = False
-    search_t         = time.ticks_ms()
 
     print("[RX] Connecting to", config.WIFI_SSID)
+    sta.connect(config.WIFI_SSID, config.WIFI_PASSWORD)  # call once only
+
+    deadline = time.ticks_add(time.ticks_ms(), 30_000)   # 30 s timeout
     while not sta.isconnected():
-        now = time.ticks_ms()
-        if time.ticks_diff(now, search_t) >= config.SEARCH_FLASH_MS:
-            search_led_state = not search_led_state
-            searching_led.value(search_led_state)
-            search_t = now
-        try:
-            sta.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
-        except OSError:
-            pass
-        time.sleep_ms(500)
+        searching_led.toggle()
+        if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
+            return None                                   # caller signals error
+        time.sleep_ms(250)
 
     searching_led.value(0)
     print("[RX] Connected –", sta.ifconfig())
@@ -74,8 +76,12 @@ def connect_wifi():
 
 
 def main():
-    sta         = connect_wifi()
-    tx_addr     = (config.TX_HOST, config.UDP_PORT)
+    sta = connect_wifi()
+    if sta is None:
+        print("[RX] WiFi connect timed out")
+        blink_error()
+
+    tx_addr = (config.TX_HOST, config.UDP_PORT)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", config.UDP_PORT))
@@ -90,7 +96,7 @@ def main():
     while True:
         now = time.ticks_ms()
 
-        # ── Send heartbeat so TX knows our IP / port ─────────
+        # ── Heartbeat to TX ──────────────────────────────────
         try:
             sock.sendto(b"RXHERE", tx_addr)
         except OSError:
@@ -114,7 +120,7 @@ def main():
             searching_led.value(0)
         else:
             connected_led.value(0)
-            all_outputs_off()           # safety interlock
+            all_outputs_off()
             if time.ticks_diff(now, search_flash_t) >= config.SEARCH_FLASH_MS:
                 searching_led.toggle()
                 search_flash_t = now
@@ -130,4 +136,8 @@ def main():
         time.sleep_ms(config.HEARTBEAT_MS)
 
 
-main()
+try:
+    main()
+except Exception as e:
+    print("[RX] CRASH:", e)
+    blink_error()
