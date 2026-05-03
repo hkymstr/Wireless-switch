@@ -1,18 +1,19 @@
 # Hardware v2 Configuration
 # Wireless Race Car Switch System - Raspberry Pi Pico 2 W
+# Branch: bluetooth
 
-# ─── WiFi ────────────────────────────────────────────────────
-WIFI_SSID = "WirelessSwitch"   # open network – no password
-TX_HOST       = "192.168.4.1"   # TX creates the AP; this is its fixed IP
-UDP_PORT      = 4210
+# ─── Bluetooth ───────────────────────────────────────────────
+BT_DEVICE_NAME  = "WirelessSwitch-TX"
+# 128-bit UUIDs for the switch-state GATT service / characteristic
+BT_SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef0"
+BT_CHAR_UUID    = "12345678-1234-5678-1234-56789abcdef1"
 
 # ─── Timing ─────────────────────────────────────────────────
-HEARTBEAT_MS     = 50    # 20 Hz switch-state broadcast
-LINK_TIMEOUT_MS  = 2000  # Loss-of-link if no packet for 2 s
+HEARTBEAT_MS     = 50    # 20 Hz switch-state notify
+LINK_TIMEOUT_MS  = 2000  # Loss-of-link if no notify for 2 s
 SEARCH_FLASH_MS  = 250   # Searching LED half-period
 
 # ─── GPIO – shared by both boards ───────────────────────────
-# STATUS LEDs (both TX and RX)
 GPIO_CONNECTED  = 0   # Solid ON when link is up
 GPIO_SEARCHING  = 7   # Flashes while searching, OFF when linked
 
@@ -24,6 +25,5 @@ TX_SWITCH_GPIOS = [1, 2, 3, 4, 5]
 #   GPIO 12    : Relay driver (K2, SPDT)
 RX_OUTPUT_GPIOS = [8, 9, 10, 11, 12]
 
-# Channel labels (for logging / diagnostics only)
 CHANNEL_NAMES = ["CH1_MOSFET", "CH2_MOSFET", "CH3_MOSFET",
                  "CH4_MOSFET", "CH5_RELAY"]
