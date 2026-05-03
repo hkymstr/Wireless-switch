@@ -38,12 +38,13 @@ def build_packet(states):
 
 def start_ap():
     ap = network.WLAN(network.AP_IF)
-    ap.active(True)
+    ap.active(False)          # reset so config takes effect
     ap.config(
         ssid=config.WIFI_SSID,
         password=config.WIFI_PASSWORD,
-        authmode=network.AUTH_WPA2_PSK,
+        authmode=3,            # WPA2-PSK
     )
+    ap.active(True)
     deadline = time.ticks_add(time.ticks_ms(), 10_000)
     while not ap.active():
         if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
