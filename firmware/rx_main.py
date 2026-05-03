@@ -81,9 +81,9 @@ def main():
     sock.bind(("0.0.0.0", config.UDP_PORT))
     sock.settimeout(0.1)
 
-    last_rx_time     = time.ticks_ms()
-    search_flash_t   = time.ticks_ms()
-    search_led_state = False
+    # Start link as timed-out so searching LED flashes until first real packet
+    last_rx_time   = time.ticks_add(time.ticks_ms(), -(config.LINK_TIMEOUT_MS + 1))
+    search_flash_t = time.ticks_ms()
 
     print("[RX] Listening for TX packets…")
 
@@ -112,13 +112,11 @@ def main():
         if link_ok:
             connected_led.value(1)
             searching_led.value(0)
-            search_led_state = False
         else:
             connected_led.value(0)
             all_outputs_off()           # safety interlock
             if time.ticks_diff(now, search_flash_t) >= config.SEARCH_FLASH_MS:
-                search_led_state = not search_led_state
-                searching_led.value(search_led_state)
+                searching_led.toggle()
                 search_flash_t = now
 
             # Re-connect WiFi if dropped

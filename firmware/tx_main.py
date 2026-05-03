@@ -89,12 +89,10 @@ def main():
         if link_ok:
             connected_led.value(1)
             searching_led.value(0)
-            search_led_state = False
         else:
             connected_led.value(0)
             if time.ticks_diff(now, search_flash_t) >= config.SEARCH_FLASH_MS:
-                search_led_state = not search_led_state
-                searching_led.value(search_led_state)
+                searching_led.toggle()
                 search_flash_t = now
 
         # ── Broadcast switch states to RX ────────────────────
