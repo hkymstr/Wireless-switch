@@ -176,7 +176,7 @@ if errorlevel 1 (
 
 echo [CHECK] RX output channel pulse test (GPIO 8-12 each 300 ms)...
 python -m mpremote connect %RX_PORT% exec ^
-    "from machine import Pin; import time; pins=[Pin(g,Pin.OUT,value=0) for g in [8,9,10,11,12]]; [p.__setattr__('value',1) or p.value(1) or time.sleep_ms(300) or p.value(0) for p in pins]; print('OK')" 2>nul
+    "from machine import Pin; import time; pins=[Pin(g,Pin.OUT,value=0) for g in [8,9,10,11,12]]; [p.on() or time.sleep_ms(300) or p.off() for p in pins]; print('OK')" 2>nul
 if errorlevel 1 (
     echo [WARN] Output pulse test inconclusive (check manually)
 ) else (
@@ -210,11 +210,12 @@ echo ============================================================
 echo  Results:  %PASS% passed   %FAIL% failed
 echo ============================================================
 
-if %FAIL%==0 (
-    echo  All checks passed. Power-cycle both Picos to start the link.
-    echo  Watch for CONNECTED LED (GPIO 0) to go solid on both boards.
-) else (
-    echo  Fix the failures above, then re-run verify.bat
-)
+if %FAIL%==0 goto :all_pass
+echo  Fix the failures above, then re-run verify.bat
+goto :done
+:all_pass
+echo  All checks passed. Power-cycle both Picos to start the link.
+echo  Watch for CONNECTED LED ^(GPIO 0^) to go solid on both boards.
+:done
 
 endlocal
