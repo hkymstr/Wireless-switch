@@ -61,13 +61,23 @@ def connect_wifi():
     sta.active(True)
 
     print("[RX] Connecting to", config.WIFI_SSID)
-    sta.connect(config.WIFI_SSID)   # open network, no password
 
-    deadline = time.ticks_add(time.ticks_ms(), 30_000)   # 30 s timeout
+    deadline     = time.ticks_add(time.ticks_ms(), 60_000)  # 60 s total timeout
+    last_attempt = time.ticks_add(time.ticks_ms(), -10_000) # trigger immediately
+
     while not sta.isconnected():
+        now = time.ticks_ms()
+        # Retry sta.connect() every 5 s in case AP wasn't ready first time
+        if time.ticks_diff(now, last_attempt) >= 5_000:
+            print("[RX] Trying connect…")
+            try:
+                sta.connect(config.WIFI_SSID)
+            except OSError:
+                pass
+            last_attempt = now
         searching_led.toggle()
-        if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
-            return None                                   # caller signals error
+        if time.ticks_diff(deadline, now) <= 0:
+            return None
         time.sleep_ms(250)
 
     searching_led.value(0)

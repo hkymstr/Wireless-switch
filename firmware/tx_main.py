@@ -46,7 +46,12 @@ def start_ap():
         time.sleep_ms(150)
 
     ap = network.WLAN(network.AP_IF)
-    ap.config(ssid=config.WIFI_SSID)   # open network
+    try:
+        ap.active(False)       # reset to clear any previous password/security
+        time.sleep_ms(500)
+    except OSError:
+        pass
+    ap.config(ssid=config.WIFI_SSID, security=0, password='')
     ap.active(True)
 
     deadline = time.ticks_add(time.ticks_ms(), 15_000)
