@@ -2,15 +2,9 @@
 Wireless Switch – TRANSMITTER firmware
 Raspberry Pi Pico 2 W  |  Hardware v2
 
-Behaviour
----------
-* Creates a WiFi Access Point that the RX connects to.
-* Reads 5 toggle-switch inputs (GPIO 1-5, active-low).
-* Broadcasts switch states over UDP at 20 Hz.
-* GPIO 0 (CONNECTED LED) – solid ON when at least one RX is connected.
-* GPIO 7 (SEARCHING LED) – flashes at 2 Hz while waiting for RX, OFF when linked.
-* Packet format: [0xAA, sw1, sw2, sw3, sw4, sw5, checksum]
-  where checksum = (sw1+sw2+sw3+sw4+sw5) & 0xFF
+GPIO 0  CONNECTED LED  – solid ON when RX is linked
+GPIO 7  SEARCHING LED  – flashes while waiting for RX, OFF when linked
+GPIO 1-5  Switch inputs (active-low, internal pull-up)
 """
 
 import network
@@ -20,14 +14,21 @@ from machine import Pin
 import config
 
 
-# ─── Hardware setup ─────────────────────────────────────────
-connected_led = Pin(config.GPIO_CONNECTED,  Pin.OUT, value=0)
-searching_led = Pin(config.GPIO_SEARCHING,  Pin.OUT, value=0)
+# ─── Hardware ────────────────────────────────────────────────
+connected_led = Pin(config.GPIO_CONNECTED, Pin.OUT, value=0)
+searching_led = Pin(config.GPIO_SEARCHING, Pin.OUT, value=0)
 switches      = [Pin(gp, Pin.IN, Pin.PULL_UP) for gp in config.TX_SWITCH_GPIOS]
 
 
+def blink_error():
+    """Fast-blink both LEDs forever to signal a fatal error."""
+    while True:
+        connected_led.toggle()
+        searching_led.toggle()
+        time.sleep_ms(100)
+
+
 def read_switches():
-    """Return list of 0/1 per channel; active-low so invert pin value."""
     return [1 - sw.value() for sw in switches]
 
 
@@ -37,41 +38,53 @@ def build_packet(states):
 
 
 def start_ap():
+    # Confirm firmware is alive – three quick searching LED blinks
+    for _ in range(3):
+        searching_led.value(1)
+        time.sleep_ms(150)
+        searching_led.value(0)
+        time.sleep_ms(150)
+
     ap = network.WLAN(network.AP_IF)
-    ap.active(False)          # reset so config takes effect
     ap.config(
         ssid=config.WIFI_SSID,
         password=config.WIFI_PASSWORD,
-        authmode=3,            # WPA2-PSK
+        security=3,            # WPA2-PSK
     )
     ap.active(True)
-    deadline = time.ticks_add(time.ticks_ms(), 10_000)
+
+    deadline = time.ticks_add(time.ticks_ms(), 15_000)
     while not ap.active():
+        searching_led.toggle()             # flash while waiting for AP
         if time.ticks_diff(deadline, time.ticks_ms()) <= 0:
-            raise RuntimeError("AP failed to start")
-        time.sleep_ms(100)
-    print("[TX] AP up –", ap.ifconfig())
+            return None                    # caller will signal error
+        time.sleep_ms(200)
+
+    searching_led.value(0)
+    print("[TX] AP up  SSID:", ap.config('ssid'), " IP:", ap.ifconfig()[0])
     return ap
 
 
 def main():
     ap = start_ap()
+    if ap is None:
+        print("[TX] AP failed to start")
+        blink_error()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", config.UDP_PORT))
     sock.setblocking(False)
 
-    rx_addr          = None
-    last_rx_time     = time.ticks_ms()
-    search_flash_t   = time.ticks_ms()
-    search_led_state = False
+    rx_addr        = None
+    last_rx_time   = time.ticks_ms()
+    search_flash_t = time.ticks_ms()
 
     print("[TX] Waiting for receiver…")
 
     while True:
         now = time.ticks_ms()
 
-        # ── Receive heartbeat / registration from RX ────────
+        # ── Receive heartbeat from RX ────────────────────────
         try:
             data, addr = sock.recvfrom(32)
             if data[:6] == b"RXHERE":
@@ -95,15 +108,18 @@ def main():
                 searching_led.toggle()
                 search_flash_t = now
 
-        # ── Broadcast switch states to RX ────────────────────
+        # ── Broadcast switch states ──────────────────────────
         if rx_addr:
-            pkt = build_packet(read_switches())
             try:
-                sock.sendto(pkt, rx_addr)
+                sock.sendto(build_packet(read_switches()), rx_addr)
             except OSError:
                 pass
 
         time.sleep_ms(config.HEARTBEAT_MS)
 
 
-main()
+try:
+    main()
+except Exception as e:
+    print("[TX] CRASH:", e)
+    blink_error()
