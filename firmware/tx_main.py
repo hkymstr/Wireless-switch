@@ -46,11 +46,7 @@ def start_ap():
         time.sleep_ms(150)
 
     ap = network.WLAN(network.AP_IF)
-    ap.config(
-        ssid=config.WIFI_SSID,
-        password=config.WIFI_PASSWORD,
-        security=3,            # WPA2-PSK
-    )
+    ap.config(ssid=config.WIFI_SSID)   # open network
     ap.active(True)
 
     deadline = time.ticks_add(time.ticks_ms(), 15_000)

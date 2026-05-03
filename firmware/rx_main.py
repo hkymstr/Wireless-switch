@@ -61,7 +61,7 @@ def connect_wifi():
     sta.active(True)
 
     print("[RX] Connecting to", config.WIFI_SSID)
-    sta.connect(config.WIFI_SSID, config.WIFI_PASSWORD)  # call once only
+    sta.connect(config.WIFI_SSID)   # open network, no password
 
     deadline = time.ticks_add(time.ticks_ms(), 30_000)   # 30 s timeout
     while not sta.isconnected():
@@ -129,7 +129,7 @@ def main():
             if not sta.isconnected():
                 print("[RX] WiFi lost – reconnecting…")
                 try:
-                    sta.connect(config.WIFI_SSID, config.WIFI_PASSWORD)
+                    sta.connect(config.WIFI_SSID)
                 except OSError:
                     pass
 

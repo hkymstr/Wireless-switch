@@ -2,8 +2,7 @@
 # Wireless Race Car Switch System - Raspberry Pi Pico 2 W
 
 # ─── WiFi ────────────────────────────────────────────────────
-WIFI_SSID     = "WirelessSwitch"
-WIFI_PASSWORD = "racecar2025!"
+WIFI_SSID = "WirelessSwitch"   # open network – no password
 TX_HOST       = "192.168.4.1"   # TX creates the AP; this is its fixed IP
 UDP_PORT      = 4210
 
