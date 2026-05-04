@@ -9,8 +9,8 @@ GPIO 12     Relay K2 output CH5
 Safety: all outputs forced OFF if link is lost.
 
 BLE role: CENTRAL / GATT client
-  - Scans for BT_DEVICE_NAME
-  - Connects and subscribes to the notify characteristic
+  - Scans indefinitely for BT_DEVICE_NAME
+  - Connects, discovers service + characteristic, writes CCCD to enable notify
   - Applies received switch states to outputs
 """
 
@@ -26,21 +26,18 @@ searching_led = Pin(config.GPIO_SEARCHING, Pin.OUT, value=0)
 outputs       = [Pin(gp, Pin.OUT, value=0) for gp in config.RX_OUTPUT_GPIOS]
 
 # ─── BLE constants ───────────────────────────────────────────
-_IRQ_SCAN_RESULT            = const(5)
-_IRQ_SCAN_DONE              = const(6)
-_IRQ_PERIPHERAL_CONNECT     = const(7)
-_IRQ_PERIPHERAL_DISCONNECT  = const(8)
-_IRQ_GATTC_SERVICE_RESULT   = const(9)
-_IRQ_GATTC_SERVICE_DONE     = const(10)
+_IRQ_SCAN_RESULT                 = const(5)
+_IRQ_SCAN_DONE                   = const(6)
+_IRQ_PERIPHERAL_CONNECT          = const(7)
+_IRQ_PERIPHERAL_DISCONNECT       = const(8)
+_IRQ_GATTC_SERVICE_RESULT        = const(9)
+_IRQ_GATTC_SERVICE_DONE          = const(10)
 _IRQ_GATTC_CHARACTERISTIC_RESULT = const(11)
 _IRQ_GATTC_CHARACTERISTIC_DONE   = const(12)
-_IRQ_GATTC_NOTIFY           = const(18)
+_IRQ_GATTC_NOTIFY                = const(18)
 
-_ADV_TYPE_NAME              = const(0x09)
-_ADV_TYPE_SHORT_NAME        = const(0x08)
-
-# CCCD handle offset to enable notifications
-_CCCD_OFFSET = const(1)
+_ADV_TYPE_NAME       = const(0x09)
+_ADV_TYPE_SHORT_NAME = const(0x08)
 
 
 def blink_error():
@@ -69,26 +66,13 @@ def parse_packet(data):
     return states
 
 
-def uuid128_to_bytes(uuid_str):
-    hex_str = uuid_str.replace('-', '')
-    b = bytes(int(hex_str[i:i+2], 16) for i in range(0, 32, 2))
-    return bytes(reversed(b))
-
-
-def startup_blinks():
-    for _ in range(3):
-        searching_led.value(1)
-        time.sleep_ms(150)
-        searching_led.value(0)
-        time.sleep_ms(150)
-
-
 def adv_contains_name(payload, target_name):
-    """Scan BLE advertisement payload for the device name."""
     i = 0
     while i < len(payload):
         length = payload[i]
         if length == 0:
+            break
+        if i + length >= len(payload):
             break
         ad_type = payload[i + 1]
         if ad_type in (_ADV_TYPE_NAME, _ADV_TYPE_SHORT_NAME):
@@ -99,71 +83,74 @@ def adv_contains_name(payload, target_name):
     return False
 
 
+def start_scan(ble):
+    # interval_us=30000, window_us=30000 = 100% duty cycle, active scan
+    ble.gap_scan(0, 30_000, 30_000, True)
+    print("[RX] Scanning for", config.BT_DEVICE_NAME)
+
+
+def startup_blinks():
+    for _ in range(3):
+        searching_led.value(1)
+        time.sleep_ms(150)
+        searching_led.value(0)
+        time.sleep_ms(150)
+
+
 def main():
     startup_blinks()
 
     ble = bluetooth.BLE()
     ble.active(True)
 
-    # State machine
-    tx_addr        = None
     conn_handle    = None
     char_handle    = None
     last_rx_time   = time.ticks_add(time.ticks_ms(), -(config.LINK_TIMEOUT_MS + 1))
     search_flash_t = time.ticks_ms()
-    discovering    = False
 
     svc_uuid  = bluetooth.UUID(config.BT_SERVICE_UUID)
     char_uuid = bluetooth.UUID(config.BT_CHAR_UUID)
 
     def ble_irq(event, data):
-        nonlocal tx_addr, conn_handle, char_handle, discovering, last_rx_time
+        nonlocal conn_handle, char_handle, last_rx_time
 
         if event == _IRQ_SCAN_RESULT:
             addr_type, addr, adv_type, rssi, adv_data = data
             if adv_contains_name(bytes(adv_data), config.BT_DEVICE_NAME):
-                tx_addr = (addr_type, bytes(addr))
-                ble.gap_scan(None)   # stop scan
-                print("[RX] Found TX, connecting…")
-                ble.gap_connect(addr_type, addr)
+                print("[RX] Found TX (RSSI", rssi, ") – connecting")
+                ble.gap_scan(None)                        # stop scan
+                ble.gap_connect(addr_type, bytes(addr))
 
         elif event == _IRQ_SCAN_DONE:
-            if conn_handle is None and tx_addr is None:
-                print("[RX] Scan done, TX not found – retrying")
-                ble.gap_scan(5_000_000, 30_000, 30_000)   # 5 s window
+            if conn_handle is None:
+                print("[RX] Scan ended without finding TX – restarting")
+                start_scan(ble)
 
         elif event == _IRQ_PERIPHERAL_CONNECT:
             conn_handle, _, _ = data
-            print("[RX] Connected to TX, handle:", conn_handle)
+            print("[RX] Connected – discovering services")
             ble.gattc_discover_services(conn_handle)
 
         elif event == _IRQ_PERIPHERAL_DISCONNECT:
             conn_handle = None
             char_handle = None
-            tx_addr     = None
-            discovering = False
-            print("[RX] TX disconnected – scanning again")
+            print("[RX] Disconnected – scanning again")
             all_outputs_off()
-            ble.gap_scan(5_000_000, 30_000, 30_000)
+            start_scan(ble)
 
         elif event == _IRQ_GATTC_SERVICE_RESULT:
             conn_h, start_h, end_h, uuid = data
             if uuid == svc_uuid:
+                print("[RX] Service found – discovering characteristics")
                 ble.gattc_discover_characteristics(conn_h, start_h, end_h)
-
-        elif event == _IRQ_GATTC_SERVICE_DONE:
-            pass   # characteristics discovery already triggered above
 
         elif event == _IRQ_GATTC_CHARACTERISTIC_RESULT:
             conn_h, def_h, value_h, properties, uuid = data
             if uuid == char_uuid:
                 char_handle = value_h
-                # Enable notifications: write 0x0001 to CCCD (value_handle + 1)
-                ble.gattc_write(conn_h, value_h + _CCCD_OFFSET, b'\x01\x00', 1)
+                # Write 0x0001 to CCCD (value_handle + 1) to enable notifications
+                ble.gattc_write(conn_h, value_h + 1, b'\x01\x00', 1)
                 print("[RX] Subscribed to TX notifications")
-
-        elif event == _IRQ_GATTC_CHARACTERISTIC_DONE:
-            discovering = False
 
         elif event == _IRQ_GATTC_NOTIFY:
             conn_h, value_h, notify_data = data
@@ -173,10 +160,7 @@ def main():
                 last_rx_time = time.ticks_ms()
 
     ble.irq(ble_irq)
-
-    # Start scanning: 5 s total, 30 ms window/interval (active scan)
-    print("[RX] Scanning for", config.BT_DEVICE_NAME)
-    ble.gap_scan(5_000_000, 30_000, 30_000)
+    start_scan(ble)
 
     while True:
         now     = time.ticks_ms()

@@ -7,7 +7,7 @@ GPIO 7  SEARCHING LED  – flashes while waiting for RX, OFF when linked
 GPIO 1-5  Switch inputs (active-low, internal pull-up)
 
 BLE role: PERIPHERAL / GATT server
-  - Advertises as BT_DEVICE_NAME
+  - Advertises by name only (flags + complete local name, stays under 31 bytes)
   - Exposes one notify characteristic with the 7-byte switch packet
   - Notifies the connected central (RX) at HEARTBEAT_MS rate
 """
@@ -24,12 +24,9 @@ searching_led = Pin(config.GPIO_SEARCHING, Pin.OUT, value=0)
 switches      = [Pin(gp, Pin.IN, Pin.PULL_UP) for gp in config.TX_SWITCH_GPIOS]
 
 # ─── BLE constants ───────────────────────────────────────────
-_ADV_TYPE_FLAGS              = const(0x01)
-_ADV_TYPE_NAME               = const(0x09)
-_ADV_TYPE_UUID128_INCOMPLETE = const(0x06)
-_FLAG_NOTIFY                 = const(0x0010)
-_IRQ_CENTRAL_CONNECT         = const(1)
-_IRQ_CENTRAL_DISCONNECT      = const(2)
+_FLAG_NOTIFY            = const(0x0010)
+_IRQ_CENTRAL_CONNECT    = const(1)
+_IRQ_CENTRAL_DISCONNECT = const(2)
 
 
 def blink_error():
@@ -48,21 +45,11 @@ def build_packet(states):
     return bytes([0xAA] + states + [chk])
 
 
-def uuid128_to_bytes(uuid_str):
-    """'xxxxxxxx-xxxx-...' → little-endian bytes for BLE advertisement."""
-    hex_str = uuid_str.replace('-', '')
-    b = bytes(int(hex_str[i:i+2], 16) for i in range(0, 32, 2))
-    return bytes(reversed(b))
-
-
-def make_adv_payload(name, service_uuid):
-    payload = bytearray()
-    payload += bytes([2, _ADV_TYPE_FLAGS, 0x06])          # general discoverable, BLE only
+def make_adv_payload(name):
+    # Flags (3 bytes) + complete local name only – stays well under 31-byte limit
     name_b = name.encode()
-    payload += bytes([1 + len(name_b), _ADV_TYPE_NAME]) + name_b
-    uuid_b = uuid128_to_bytes(service_uuid)
-    payload += bytes([1 + len(uuid_b), _ADV_TYPE_UUID128_INCOMPLETE]) + uuid_b
-    return bytes(payload)
+    return bytes([2, 0x01, 0x06,
+                  1 + len(name_b), 0x09]) + name_b
 
 
 def register_gatt(ble, service_uuid, char_uuid):
@@ -87,9 +74,11 @@ def main():
     ble.active(True)
 
     conn_handle    = None
-    adv_payload    = make_adv_payload(config.BT_DEVICE_NAME, config.BT_SERVICE_UUID)
+    adv_payload    = make_adv_payload(config.BT_DEVICE_NAME)
     char_handle    = register_gatt(ble, config.BT_SERVICE_UUID, config.BT_CHAR_UUID)
     search_flash_t = time.ticks_ms()
+
+    print("[TX] ADV payload len:", len(adv_payload), "bytes")
 
     def ble_irq(event, data):
         nonlocal conn_handle
@@ -103,7 +92,7 @@ def main():
 
     ble.irq(ble_irq)
     ble.gap_advertise(100_000, adv_payload)   # 100 ms advertising interval
-    print("[TX] Advertising as", config.BT_DEVICE_NAME)
+    print("[TX] Advertising as:", config.BT_DEVICE_NAME)
 
     while True:
         now = time.ticks_ms()
