@@ -73,11 +73,15 @@ All outputs are forced **OFF** if the wireless link is lost.
 │   └── sym-lib-table               KiCad symbol library table
 │
 ├── firmware/
-│   ├── config.py       Shared configuration (WiFi credentials, GPIO assignments)
+│   ├── config.py       Shared configuration (WiFi SSID, GPIO assignments)
 │   ├── tx_main.py      Transmitter MicroPython firmware
 │   ├── rx_main.py      Receiver MicroPython firmware
-│   ├── install_tx.sh   Automated transmitter installation script
-│   └── install_rx.sh   Automated receiver installation script
+│   ├── install_tx.sh   Automated transmitter installer (Linux/macOS)
+│   ├── install_rx.sh   Automated receiver installer (Linux/macOS)
+│   ├── install_tx.bat  Automated transmitter installer (Windows)
+│   ├── install_rx.bat  Automated receiver installer (Windows)
+│   ├── verify.bat      Post-install verification (Windows)
+│   └── led_test.bat    LED test script (Windows)
 │
 └── docs/
     └── wireless_switch.pdf   Full schematic PDF
@@ -123,6 +127,7 @@ pip install mpremote
 
 Connect the **transmitter** Pico via USB, then:
 
+**Linux / macOS:**
 ```bash
 cd firmware
 chmod +x install_tx.sh
@@ -132,31 +137,59 @@ chmod +x install_tx.sh
 ./install_tx.sh /dev/tty.usbmodem* # macOS
 ```
 
+**Windows:**
+```bat
+cd firmware
+install_tx.bat COM3              # replace COM3 with your actual port
+```
+
 ### Step 4 — Install Receiver firmware
 
 Connect the **receiver** Pico via USB, then:
 
+**Linux / macOS:**
 ```bash
 ./install_rx.sh
 ```
 
-### Step 5 — Configure WiFi credentials (optional)
-
-Edit `firmware/config.py` before installation to change the WiFi SSID/password:
-
-```python
-WIFI_SSID     = "WirelessSwitch"
-WIFI_PASSWORD = "racecar2025!"
+**Windows:**
+```bat
+install_rx.bat COM5              # replace COM5 with your actual port
 ```
 
-Both boards must use the same credentials.
+### Step 5 — Verify installation (optional)
+
+**Windows:**
+```bat
+verify.bat COM3 COM5
+```
+
+Run the LED test to confirm both boards' indicator LEDs are wired correctly:
+
+**Windows:**
+```bat
+led_test.bat COM3 COM5
+```
+
+### Step 6 — Configure WiFi SSID (optional)
+
+The network is **open (no password)**. The default SSID is `WirelessSwitch`.  
+To change it, edit `firmware/config.py` before installation:
+
+```python
+WIFI_SSID = "WirelessSwitch"
+```
+
+The transmitter creates the access point; the receiver connects to it automatically.
 
 ---
 
 ## Operation
 
-1. **Power on both boards** — the transmitter creates a WiFi access point.
-2. The **SEARCHING LED (GPIO 7)** flashes on both boards until the link is established.
+1. **Power on both boards** — on startup, both boards blink the **SEARCHING LED 3× quickly**  
+   to confirm firmware is running.
+2. The transmitter creates an open WiFi access point (SSID: `WirelessSwitch`, no password).  
+   The **SEARCHING LED (GPIO 7)** flashes on both boards until the link is established.
 3. Once connected, the **CONNECTED LED (GPIO 0)** lights solid on both boards and  
    the SEARCHING LED turns off.
 4. Pressing any switch on the transmitter immediately activates the corresponding  
@@ -180,7 +213,9 @@ Both boards must use the same credentials.
 
 | Symptom | Likely cause | Fix |
 |---------|-------------|-----|
-| SEARCHING LED never stops flashing | Wrong WiFi credentials | Check `config.py` SSID/password match on both boards |
+| SEARCHING LED never stops flashing | RX cannot find the TX access point | Confirm TX is powered and its SEARCHING LED is also blinking; check `config.py` SSID matches |
+| SEARCHING LED does not blink 3× on boot | Firmware not installed | Re-run the install script; verify MicroPython UF2 was flashed first |
+| SEARCHING LED never stops flashing (TX side) | TX AP failed to start due to stale security settings | Firmware deactivates the AP before reconfiguring to clear old settings — power-cycle the TX board |
 | Output stays on after switch released | Link lost before switch released | Check antenna placement; reduce distance |
 | `mpremote` cannot find device | Driver missing or wrong port | Try `mpremote` with no arguments to list ports |
 | Pico not detected as storage drive | Not holding BOOTSEL | Hold BOOTSEL before plugging USB |
