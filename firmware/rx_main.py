@@ -6,12 +6,14 @@ GPIO  0  CONNECTED LED  – solid ON when link is up
 GPIO  7  SEARCHING LED  – flashes while searching, OFF when linked
 GPIO  8-11  MOSFET outputs CH1-CH4 (up to 5 A each)
 GPIO 12     Relay K2 output CH5
-Safety: all outputs forced OFF if link is lost.
 
-BLE role: CENTRAL / GATT client
-  - Scans indefinitely for BT_DEVICE_NAME
-  - Connects and waits for notifications via _IRQ_GATTC_NOTIFY
-  - No GATT service discovery – TX sends notifications unconditionally
+Link-loss behaviour:
+  - Outputs HOLD their last state for HOLD_ON_DISCONNECT_MS (10 s)
+  - After 10 s with no reconnect, all outputs turn off
+
+Channel modes (set per-channel in config.CHANNEL_MODES):
+  - MODE_MOMENTARY : output follows switch (ON while held)
+  - MODE_LATCH     : each press toggles output ON/OFF
 """
 
 import bluetooth
@@ -26,14 +28,18 @@ searching_led = Pin(config.GPIO_SEARCHING, Pin.OUT, value=0)
 outputs       = [Pin(gp, Pin.OUT, value=0) for gp in config.RX_OUTPUT_GPIOS]
 
 # ─── BLE constants ───────────────────────────────────────────
-_IRQ_SCAN_RESULT        = const(5)
-_IRQ_SCAN_DONE          = const(6)
+_IRQ_SCAN_RESULT           = const(5)
+_IRQ_SCAN_DONE             = const(6)
 _IRQ_PERIPHERAL_CONNECT    = const(7)
 _IRQ_PERIPHERAL_DISCONNECT = const(8)
 _IRQ_GATTC_NOTIFY          = const(18)
 
 _ADV_TYPE_NAME       = const(0x09)
 _ADV_TYPE_SHORT_NAME = const(0x08)
+
+# ─── Channel state ───────────────────────────────────────────
+_prev_raw  = [0] * len(config.RX_OUTPUT_GPIOS)   # last received switch states
+_latch_out = [0] * len(config.RX_OUTPUT_GPIOS)   # current latch output states
 
 
 def blink_error():
@@ -46,11 +52,20 @@ def blink_error():
 def all_outputs_off():
     for out in outputs:
         out.value(0)
+    for i in range(len(_latch_out)):
+        _latch_out[i] = 0
 
 
-def set_outputs(states):
-    for out, state in zip(outputs, states):
-        out.value(int(state))
+def apply_states(raw):
+    """Apply received switch states honouring per-channel mode."""
+    for i in range(len(outputs)):
+        if config.CHANNEL_MODES[i] == config.MODE_MOMENTARY:
+            outputs[i].value(raw[i])
+        else:                                          # MODE_LATCH
+            if raw[i] == 1 and _prev_raw[i] == 0:     # rising edge → toggle
+                _latch_out[i] ^= 1
+            outputs[i].value(_latch_out[i])
+        _prev_raw[i] = raw[i]
 
 
 def parse_packet(data):
@@ -93,11 +108,12 @@ def main():
 
     conn_handle    = None
     last_rx_time   = time.ticks_add(time.ticks_ms(), -(config.LINK_TIMEOUT_MS + 1))
+    # Initialise past the hold window so outputs start OFF at boot
+    last_link_ok_t = time.ticks_add(time.ticks_ms(), -(config.HOLD_ON_DISCONNECT_MS + 1))
     search_flash_t = time.ticks_ms()
 
-    # Flags set in IRQ, acted on in main loop
     do_scan    = False
-    do_connect = None   # (addr_type, addr) when TX is found
+    do_connect = None
 
     def ble_irq(event, data):
         nonlocal conn_handle, last_rx_time, do_scan, do_connect
@@ -120,15 +136,15 @@ def main():
         elif event == _IRQ_PERIPHERAL_DISCONNECT:
             conn_handle = None
             do_connect  = None
-            print("[RX] Disconnected – scanning again")
-            all_outputs_off()
+            print("[RX] Disconnected – holding states, scanning")
+            # No all_outputs_off() here – hold logic runs in main loop
             do_scan = True
 
         elif event == _IRQ_GATTC_NOTIFY:
             _, _, notify_data = data
             states = parse_packet(bytes(notify_data))
             if states is not None:
-                set_outputs(states)
+                apply_states(states)
                 last_rx_time = time.ticks_ms()
 
     ble.irq(ble_irq)
@@ -138,7 +154,6 @@ def main():
     while True:
         now = time.ticks_ms()
 
-        # Connect to TX (deferred from IRQ)
         if do_connect is not None and conn_handle is None:
             addr_type, addr = do_connect
             do_connect = None
@@ -146,7 +161,6 @@ def main():
             time.sleep_ms(100)
             ble.gap_connect(addr_type, addr)
 
-        # Restart scan (deferred from IRQ)
         if do_scan and conn_handle is None and do_connect is None:
             do_scan = False
             ble.gap_scan(0, 30_000, 30_000, True)
@@ -157,9 +171,12 @@ def main():
         if link_ok:
             connected_led.value(1)
             searching_led.value(0)
+            last_link_ok_t = now
         else:
             connected_led.value(0)
-            all_outputs_off()
+            # Hold last output states for HOLD_ON_DISCONNECT_MS, then release
+            if time.ticks_diff(now, last_link_ok_t) >= config.HOLD_ON_DISCONNECT_MS:
+                all_outputs_off()
             if time.ticks_diff(now, search_flash_t) >= config.SEARCH_FLASH_MS:
                 searching_led.toggle()
                 search_flash_t = now
