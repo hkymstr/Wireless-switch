@@ -8,8 +8,8 @@ GPIO 1-5  Switch inputs (active-low, internal pull-up)
 
 BLE role: PERIPHERAL / GATT server
   - Advertises by name (flags + complete local name, 21 bytes)
-  - Waits for RX to write CCCD before sending any notifications
-  - Notifies connected central at HEARTBEAT_MS rate once subscribed
+  - Sends notifications every HEARTBEAT_MS once connected
+  - 1-second settle delay after connect before first notify
 """
 
 import bluetooth
@@ -24,10 +24,9 @@ searching_led = Pin(config.GPIO_SEARCHING, Pin.OUT, value=0)
 switches      = [Pin(gp, Pin.IN, Pin.PULL_UP) for gp in config.TX_SWITCH_GPIOS]
 
 # ─── BLE constants ───────────────────────────────────────────
-_FLAG_NOTIFY         = const(0x0010)
+_FLAG_NOTIFY            = const(0x0010)
 _IRQ_CENTRAL_CONNECT    = const(1)
 _IRQ_CENTRAL_DISCONNECT = const(2)
-_IRQ_GATTS_WRITE        = const(3)
 
 
 def blink_error():
@@ -72,44 +71,33 @@ def main():
     ble = bluetooth.BLE()
     ble.active(True)
 
-    adv_payload = make_adv_payload(config.BT_DEVICE_NAME)
-    char_handle = register_gatt(ble, config.BT_SERVICE_UUID, config.BT_CHAR_UUID)
-    cccd_handle = char_handle + 1   # CCCD sits immediately after the value handle
-
-    print("[TX] ADV payload:", len(adv_payload), "bytes")
-    print("[TX] char_handle:", char_handle, " cccd_handle:", cccd_handle)
-
-    # State – modified only inside IRQ, read in main loop
-    conn_handle    = None
-    subscribed     = False
-    do_advertise   = False          # flag: restart advertising from main loop
+    adv_payload    = make_adv_payload(config.BT_DEVICE_NAME)
+    char_handle    = register_gatt(ble, config.BT_SERVICE_UUID, config.BT_CHAR_UUID)
     search_flash_t = time.ticks_ms()
 
+    conn_handle  = None
+    connect_time = None
+    do_advertise = False
+
     def ble_irq(event, data):
-        nonlocal conn_handle, subscribed, do_advertise
+        nonlocal conn_handle, connect_time, do_advertise
         if event == _IRQ_CENTRAL_CONNECT:
             conn_handle, _, _ = data
-            subscribed = False
+            connect_time = time.ticks_ms()
             print("[TX] RX connected, handle:", conn_handle)
         elif event == _IRQ_CENTRAL_DISCONNECT:
             conn_handle  = None
-            subscribed   = False
-            do_advertise = True     # schedule from main loop, not here
+            connect_time = None
+            do_advertise = True
             print("[TX] RX disconnected")
-        elif event == _IRQ_GATTS_WRITE:
-            _, attr_h = data
-            if attr_h == cccd_handle:
-                subscribed = True
-                print("[TX] RX subscribed – starting notifications")
 
     ble.irq(ble_irq)
     ble.gap_advertise(100_000, adv_payload)
-    print("[TX] Advertising as:", config.BT_DEVICE_NAME)
+    print("[TX] Advertising as:", config.BT_DEVICE_NAME, " payload:", len(adv_payload), "B")
 
     while True:
         now = time.ticks_ms()
 
-        # Restart advertising from main loop (safe outside IRQ)
         if do_advertise:
             do_advertise = False
             ble.gap_advertise(100_000, adv_payload)
@@ -118,8 +106,9 @@ def main():
         if conn_handle is not None:
             connected_led.value(1)
             searching_led.value(0)
-            # Only notify after RX has written to CCCD — prevents flooding discovery
-            if subscribed:
+            # 1-second settle delay lets RX finish any GATT discovery before notifications start
+            settled = connect_time and time.ticks_diff(now, connect_time) > 1000
+            if settled:
                 try:
                     ble.gatts_notify(conn_handle, char_handle, build_packet(read_switches()))
                 except OSError:
