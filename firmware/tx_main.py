@@ -7,9 +7,9 @@ GPIO 7  SEARCHING LED  – flashes while waiting for RX, OFF when linked
 GPIO 1-5  Switch inputs (active-low, internal pull-up)
 
 BLE role: PERIPHERAL / GATT server
-  - Advertises by name only (flags + complete local name, stays under 31 bytes)
-  - Exposes one notify characteristic with the 7-byte switch packet
-  - Notifies the connected central (RX) at HEARTBEAT_MS rate
+  - Advertises by name (flags + complete local name, 21 bytes)
+  - Waits for RX to write CCCD before sending any notifications
+  - Notifies connected central at HEARTBEAT_MS rate once subscribed
 """
 
 import bluetooth
@@ -24,9 +24,10 @@ searching_led = Pin(config.GPIO_SEARCHING, Pin.OUT, value=0)
 switches      = [Pin(gp, Pin.IN, Pin.PULL_UP) for gp in config.TX_SWITCH_GPIOS]
 
 # ─── BLE constants ───────────────────────────────────────────
-_FLAG_NOTIFY            = const(0x0010)
+_FLAG_NOTIFY         = const(0x0010)
 _IRQ_CENTRAL_CONNECT    = const(1)
 _IRQ_CENTRAL_DISCONNECT = const(2)
+_IRQ_GATTS_WRITE        = const(3)
 
 
 def blink_error():
@@ -46,10 +47,8 @@ def build_packet(states):
 
 
 def make_adv_payload(name):
-    # Flags (3 bytes) + complete local name only – stays well under 31-byte limit
     name_b = name.encode()
-    return bytes([2, 0x01, 0x06,
-                  1 + len(name_b), 0x09]) + name_b
+    return bytes([2, 0x01, 0x06, 1 + len(name_b), 0x09]) + name_b
 
 
 def register_gatt(ble, service_uuid, char_uuid):
@@ -73,37 +72,58 @@ def main():
     ble = bluetooth.BLE()
     ble.active(True)
 
+    adv_payload = make_adv_payload(config.BT_DEVICE_NAME)
+    char_handle = register_gatt(ble, config.BT_SERVICE_UUID, config.BT_CHAR_UUID)
+    cccd_handle = char_handle + 1   # CCCD sits immediately after the value handle
+
+    print("[TX] ADV payload:", len(adv_payload), "bytes")
+    print("[TX] char_handle:", char_handle, " cccd_handle:", cccd_handle)
+
+    # State – modified only inside IRQ, read in main loop
     conn_handle    = None
-    adv_payload    = make_adv_payload(config.BT_DEVICE_NAME)
-    char_handle    = register_gatt(ble, config.BT_SERVICE_UUID, config.BT_CHAR_UUID)
+    subscribed     = False
+    do_advertise   = False          # flag: restart advertising from main loop
     search_flash_t = time.ticks_ms()
 
-    print("[TX] ADV payload len:", len(adv_payload), "bytes")
-
     def ble_irq(event, data):
-        nonlocal conn_handle
+        nonlocal conn_handle, subscribed, do_advertise
         if event == _IRQ_CENTRAL_CONNECT:
             conn_handle, _, _ = data
+            subscribed = False
             print("[TX] RX connected, handle:", conn_handle)
         elif event == _IRQ_CENTRAL_DISCONNECT:
-            conn_handle = None
-            print("[TX] RX disconnected – resuming advertising")
-            ble.gap_advertise(100_000, adv_payload)
+            conn_handle  = None
+            subscribed   = False
+            do_advertise = True     # schedule from main loop, not here
+            print("[TX] RX disconnected")
+        elif event == _IRQ_GATTS_WRITE:
+            _, attr_h = data
+            if attr_h == cccd_handle:
+                subscribed = True
+                print("[TX] RX subscribed – starting notifications")
 
     ble.irq(ble_irq)
-    ble.gap_advertise(100_000, adv_payload)   # 100 ms advertising interval
+    ble.gap_advertise(100_000, adv_payload)
     print("[TX] Advertising as:", config.BT_DEVICE_NAME)
 
     while True:
         now = time.ticks_ms()
 
+        # Restart advertising from main loop (safe outside IRQ)
+        if do_advertise:
+            do_advertise = False
+            ble.gap_advertise(100_000, adv_payload)
+            print("[TX] Advertising resumed")
+
         if conn_handle is not None:
             connected_led.value(1)
             searching_led.value(0)
-            try:
-                ble.gatts_notify(conn_handle, char_handle, build_packet(read_switches()))
-            except OSError:
-                pass
+            # Only notify after RX has written to CCCD — prevents flooding discovery
+            if subscribed:
+                try:
+                    ble.gatts_notify(conn_handle, char_handle, build_packet(read_switches()))
+                except OSError:
+                    pass
         else:
             connected_led.value(0)
             if time.ticks_diff(now, search_flash_t) >= config.SEARCH_FLASH_MS:

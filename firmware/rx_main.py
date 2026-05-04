@@ -70,9 +70,7 @@ def adv_contains_name(payload, target_name):
     i = 0
     while i < len(payload):
         length = payload[i]
-        if length == 0:
-            break
-        if i + length >= len(payload):
+        if length == 0 or i + length >= len(payload):
             break
         ad_type = payload[i + 1]
         if ad_type in (_ADV_TYPE_NAME, _ADV_TYPE_SHORT_NAME):
@@ -81,12 +79,6 @@ def adv_contains_name(payload, target_name):
                 return True
         i += 1 + length
     return False
-
-
-def start_scan(ble):
-    # interval_us=30000, window_us=30000 = 100% duty cycle, active scan
-    ble.gap_scan(0, 30_000, 30_000, True)
-    print("[RX] Scanning for", config.BT_DEVICE_NAME)
 
 
 def startup_blinks():
@@ -104,27 +96,29 @@ def main():
     ble.active(True)
 
     conn_handle    = None
-    char_handle    = None
     last_rx_time   = time.ticks_add(time.ticks_ms(), -(config.LINK_TIMEOUT_MS + 1))
     search_flash_t = time.ticks_ms()
 
     svc_uuid  = bluetooth.UUID(config.BT_SERVICE_UUID)
     char_uuid = bluetooth.UUID(config.BT_CHAR_UUID)
 
+    # Flags set in IRQ, acted on in main loop (safe pattern for MicroPython BLE)
+    do_scan    = False
+    do_connect = None   # set to (addr_type, addr) when TX is found
+
     def ble_irq(event, data):
-        nonlocal conn_handle, char_handle, last_rx_time
+        nonlocal conn_handle, last_rx_time, do_scan, do_connect
 
         if event == _IRQ_SCAN_RESULT:
             addr_type, addr, adv_type, rssi, adv_data = data
-            if adv_contains_name(bytes(adv_data), config.BT_DEVICE_NAME):
-                print("[RX] Found TX (RSSI", rssi, ") – connecting")
-                ble.gap_scan(None)                        # stop scan
-                ble.gap_connect(addr_type, bytes(addr))
+            if do_connect is None and adv_contains_name(bytes(adv_data), config.BT_DEVICE_NAME):
+                print("[RX] Found TX (RSSI", rssi, ") – will connect")
+                do_connect = (addr_type, bytes(addr))   # connect from main loop
 
         elif event == _IRQ_SCAN_DONE:
-            if conn_handle is None:
-                print("[RX] Scan ended without finding TX – restarting")
-                start_scan(ble)
+            if conn_handle is None and do_connect is None:
+                print("[RX] Scan ended, TX not found – restarting")
+                do_scan = True
 
         elif event == _IRQ_PERIPHERAL_CONNECT:
             conn_handle, _, _ = data
@@ -133,10 +127,10 @@ def main():
 
         elif event == _IRQ_PERIPHERAL_DISCONNECT:
             conn_handle = None
-            char_handle = None
-            print("[RX] Disconnected – scanning again")
+            do_connect  = None
+            print("[RX] Disconnected – will scan again")
             all_outputs_off()
-            start_scan(ble)
+            do_scan = True
 
         elif event == _IRQ_GATTC_SERVICE_RESULT:
             conn_h, start_h, end_h, uuid = data
@@ -147,23 +141,40 @@ def main():
         elif event == _IRQ_GATTC_CHARACTERISTIC_RESULT:
             conn_h, def_h, value_h, properties, uuid = data
             if uuid == char_uuid:
-                char_handle = value_h
+                print("[RX] Characteristic found, value_h:", value_h, "– enabling notify")
                 # Write 0x0001 to CCCD (value_handle + 1) to enable notifications
                 ble.gattc_write(conn_h, value_h + 1, b'\x01\x00', 1)
-                print("[RX] Subscribed to TX notifications")
 
         elif event == _IRQ_GATTC_NOTIFY:
-            conn_h, value_h, notify_data = data
+            _, _, notify_data = data
             states = parse_packet(bytes(notify_data))
             if states is not None:
                 set_outputs(states)
                 last_rx_time = time.ticks_ms()
 
     ble.irq(ble_irq)
-    start_scan(ble)
+
+    # Initial scan
+    ble.gap_scan(0, 30_000, 30_000, True)
+    print("[RX] Scanning for", config.BT_DEVICE_NAME)
 
     while True:
-        now     = time.ticks_ms()
+        now = time.ticks_ms()
+
+        # Stop scan and connect when TX found (deferred from IRQ)
+        if do_connect is not None and conn_handle is None:
+            addr_type, addr = do_connect
+            ble.gap_scan(None)              # stop scan first
+            time.sleep_ms(50)
+            ble.gap_connect(addr_type, addr)
+            do_connect = None
+
+        # Restart scan (deferred from IRQ)
+        if do_scan and conn_handle is None and do_connect is None:
+            do_scan = False
+            ble.gap_scan(0, 30_000, 30_000, True)
+            print("[RX] Scanning resumed")
+
         link_ok = time.ticks_diff(now, last_rx_time) < config.LINK_TIMEOUT_MS
 
         if link_ok:
