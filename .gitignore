@@ -1,0 +1,13 @@
+# Extracted zip — source files are in wireless_switch_260419.zip
+existing_design/
+
+# KiCad
+*.bak
+*.lck
+*-backups/
+_autosave-*
+fp-info-cache
+
+# Python
+__pycache__/
+*.pyc
