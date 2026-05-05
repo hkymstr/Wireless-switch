@@ -173,7 +173,23 @@ verify.bat COM3 COM5
 led_test.bat COM3 COM5
 ```
 
-### Step 6 — Configure channel modes (optional)
+### Step 6 — Set PAIR_ID for multiple pairs (required when running 2+ pairs)
+
+If you have more than one TX/RX pair operating at the same time, each pair must have a
+unique `PAIR_ID` in `config.py` so they don't cross-connect.  Flash **both** the TX and
+RX of a pair with the same number before installing:
+
+```python
+PAIR_ID = 1   # Pair 1: TX and RX both set to 1
+PAIR_ID = 2   # Pair 2: TX and RX both set to 2
+```
+
+The TX will advertise as `WirelessSwitch-1`, `WirelessSwitch-2`, etc., and the RX will
+only connect to the name that matches its own `PAIR_ID`.
+
+Re-run both `install_tx.bat` and `install_rx.bat` after changing `PAIR_ID`.
+
+### Step 7 — Configure channel modes (optional)
 
 Edit `firmware/config.py` before installing the receiver to set each channel's behaviour:
 
