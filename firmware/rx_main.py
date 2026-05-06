@@ -190,7 +190,10 @@ def _serve_rx(cl, link_ok):
     w(b"</table>")
 
     w(b"<button>Save Settings</button>")
-    w(b"</form></body></html>")
+    w(b"</form>")
+    w(b"<p style='color:#6c757d;font-size:.8em;margin-top:20px'>Firmware v" +
+      config.FIRMWARE_VERSION.encode() + b" &ndash; RX</p>")
+    w(b"</body></html>")
 
 
 def handle_web_rx(web_sock, link_ok):

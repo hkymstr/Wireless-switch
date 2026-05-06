@@ -2,6 +2,8 @@
 # Wireless Race Car Switch System - Raspberry Pi Pico 2 W
 # Branch: hardware-v2 (WiFi)
 
+FIRMWARE_VERSION = "2.1.0"
+
 # -- Pairing --------------------------------------------------
 # PAIR_ID must match on both TX and RX that belong together.
 # WIFI_SSID is derived from it.  Override via user_config.json

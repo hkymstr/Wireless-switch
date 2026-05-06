@@ -123,7 +123,10 @@ def _serve_tx(cl, link_ok, rx_addr, sw_states):
     w(b"<div class=warn>&#9888; Changing Pair ID renames the WiFi network and reboots"
       b" this board. Update the RX Pair ID first, then save here.</div>")
     w(b"<button>Save &amp; Reboot TX</button>")
-    w(b"</form></body></html>")
+    w(b"</form>")
+    w(b"<p style='color:#6c757d;font-size:.8em;margin-top:20px'>Firmware v" +
+      config.FIRMWARE_VERSION.encode() + b" &ndash; TX</p>")
+    w(b"</body></html>")
 
 
 def handle_web_tx(web_sock, link_ok, rx_addr, sw_states):
