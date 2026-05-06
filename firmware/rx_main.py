@@ -147,6 +147,7 @@ def _serve_rx(cl, link_ok):
     w = cl.write
     w(_HEAD + _CSS + b"</style></head><body>")
     w(b"<h2>RX &ndash; " + WIFI_SSID.encode() + b"</h2>")
+    w(b"<p><a href='http://192.168.4.1/'>&#8592; TX Settings</a></p>")
     w(b"<div class=ok>&#10003; Linked to TX</div>" if link_ok
       else b"<div class=srch>&#9679; Searching for TX&hellip;</div>")
 
@@ -201,9 +202,18 @@ def handle_web_rx(web_sock, link_ok):
     try:
         cl.settimeout(0.5)
         req = cl.recv(1024)
+        # Body often arrives in a second TCP packet — read it if missing
+        if req.startswith(b"POST") and b"\r\n\r\n" in req:
+            body = req.split(b"\r\n\r\n", 1)[1]
+            if not body:
+                try:
+                    body = cl.recv(512)
+                except OSError:
+                    body = b""
+        elif req.startswith(b"POST"):
+            body = b""
 
         if req.startswith(b"POST"):
-            body = req.split(b"\r\n\r\n", 1)[-1] if b"\r\n\r\n" in req else b""
             params = _parse_form(body)
             need_reset = False
 
@@ -304,10 +314,11 @@ def main():
     web.setblocking(False)
 
     # Start past the hold window so outputs are OFF at boot
-    last_rx_time   = time.ticks_add(time.ticks_ms(), -(config.LINK_TIMEOUT_MS + 1))
-    last_link_ok_t = time.ticks_add(time.ticks_ms(), -(HOLD_MS + 1))
-    search_flash_t = time.ticks_ms()
-    link_ok        = False
+    last_rx_time      = time.ticks_add(time.ticks_ms(), -(config.LINK_TIMEOUT_MS + 1))
+    last_link_ok_t    = time.ticks_add(time.ticks_ms(), -(HOLD_MS + 1))
+    search_flash_t    = time.ticks_ms()
+    last_reconnect_t  = time.ticks_add(time.ticks_ms(), -10_000)
+    link_ok           = False
 
     print("[RX] Listening for TX packets…")
 
@@ -349,11 +360,16 @@ def main():
                 searching_led.toggle()
                 search_flash_t = now
             if not sta.isconnected():
-                print("[RX] WiFi lost – reconnecting…")
-                try:
-                    sta.connect(WIFI_SSID)
-                except OSError:
-                    pass
+                if time.ticks_diff(now, last_reconnect_t) >= 5_000:
+                    print("[RX] WiFi lost – reconnecting…")
+                    try:
+                        sta.active(False)
+                        time.sleep_ms(100)
+                        sta.active(True)
+                        sta.connect(WIFI_SSID)
+                    except OSError:
+                        pass
+                    last_reconnect_t = now
 
         time.sleep_ms(config.HEARTBEAT_MS)
 
